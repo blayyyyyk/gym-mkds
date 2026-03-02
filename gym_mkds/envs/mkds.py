@@ -1,32 +1,18 @@
-import multiprocessing
-from multiprocessing.shared_memory import SharedMemory
-from desmume.emulator import SCREEN_HEIGHT, SCREEN_HEIGHT_BOTH, SCREEN_PIXEL_SIZE, SCREEN_WIDTH
-from desmume.frontend.gtk_drawing_impl.software import cairo
+from desmume.emulator import DeSmuME
+from desmume._emulator import SCREEN_HEIGHT, SCREEN_PIXEL_SIZE, SCREEN_WIDTH
+from desmume.mkds.mkds import FX32_SCALE_FACTOR
 import gymnasium as gym
-from typing import Any, Callable, Optional, TypedDict, cast
-from functools import partial
-from gymnasium.vector import AsyncVectorEnv
-from src.mkdslib.mkdslib import FX32_SCALE_FACTOR
-from desmume.controls import Keys, keymask
-from src.core.emulator import MarioKart
 import numpy as np
-import torch, os
-import pynput
-from src.gym.window import EnvWindow, VecEnvWindow
-from gymnasium.wrappers import HumanRendering
-
+import torch
 
 ID_TO_KEY = [0, 33, 289, 1, 257, 321, 801, 273, 17]
 KEY_TO_ID = {k: i for i, k in enumerate(ID_TO_KEY)}
-
-
-        
 
 class MarioKartEnv(gym.Env):
     def __init__(self, rom_path: str, ray_max_dist: int = 3000, ray_count: int = 20, render_mode: str = "rgb_array", volume: int = 0):
         super().__init__()
         self.device = torch.device("cpu")
-        self.emu = MarioKart()
+        self.emu = DeSmuME()
         self.state = self.emu.memory
         self.emu.open(rom_path)
             
@@ -85,8 +71,6 @@ class MarioKartEnv(gym.Env):
         
         self.emu.cycle()
         
-        
-        
         obs = self._get_obs()
         info = self._get_info()
         
@@ -137,3 +121,4 @@ class MarioKartEnv(gym.Env):
     def close(self):
         self.emu.close()
         super().close()
+        

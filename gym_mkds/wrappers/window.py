@@ -1,12 +1,14 @@
 import numpy as np
 import gymnasium as gym
 from typing import cast
-from desmume.emulator import SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT_BOTH
+from desmume._emulator import SCREEN_HEIGHT, SCREEN_WIDTH
 
 import gi, cairo
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gdk, GLib
+
+SCREEN_HEIGHT_BOTH = SCREEN_HEIGHT * 2
 
 def tile_images(images: np.ndarray) -> np.ndarray:
     """Reduces the image dimensions by tiling the images into a single image."""
