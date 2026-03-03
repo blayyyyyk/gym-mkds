@@ -1,5 +1,4 @@
-from desmume.emulator import DeSmuME
-from desmume._emulator import SCREEN_HEIGHT, SCREEN_PIXEL_SIZE, SCREEN_WIDTH
+from desmume.emulator_mkds import MarioKart, SCREEN_HEIGHT, SCREEN_PIXEL_SIZE, SCREEN_WIDTH
 from desmume.mkds.mkds import FX32_SCALE_FACTOR
 import gymnasium as gym
 import numpy as np
@@ -12,7 +11,7 @@ class MarioKartEnv(gym.Env):
     def __init__(self, rom_path: str, ray_max_dist: int = 3000, ray_count: int = 20, render_mode: str = "rgb_array", volume: int = 0):
         super().__init__()
         self.device = torch.device("cpu")
-        self.emu = DeSmuME()
+        self.emu = MarioKart(max_dist=ray_max_dist, n_rays=ray_count)
         self.state = self.emu.memory
         self.emu.open(rom_path)
             

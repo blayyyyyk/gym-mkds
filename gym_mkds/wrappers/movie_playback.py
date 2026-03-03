@@ -15,6 +15,7 @@ class MoviePlaybackWrapper(gym.Wrapper):
     def reset(self, *, seed=None, options=None):
         self.emu.movie.play(self.movie_path)
         obs, info = super().reset()
+        info["movie_playing"] = self.emu.movie.is_playing()
         return obs, info
 
     def close(self):
@@ -28,5 +29,7 @@ class MoviePlaybackWrapper(gym.Wrapper):
         if not self.func(self.emu):
             if self.emu.movie.is_playing():
                 self.emu.movie.stop()
+                
+        info["movie_playing"] = self.emu.movie.is_playing()
 
         return obs, reward, terminated, truncated, info

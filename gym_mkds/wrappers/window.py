@@ -1,14 +1,12 @@
 import numpy as np
 import gymnasium as gym
 from typing import cast
-from desmume._emulator import SCREEN_HEIGHT, SCREEN_WIDTH
+from desmume.emulator import SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT_BOTH
 
 import gi, cairo
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gdk, GLib
-
-SCREEN_HEIGHT_BOTH = SCREEN_HEIGHT * 2
 
 def tile_images(images: np.ndarray) -> np.ndarray:
     """Reduces the image dimensions by tiling the images into a single image."""
@@ -44,11 +42,14 @@ class WindowBase(Gtk.Window):
         self.drawing_area.connect("draw", self.on_draw)
         self.add(self.drawing_area)
         
-        self.connect("destroy", self.on_destroy)
+        self.connect("destroy", self._on_destroy_main)
         # We don't set a default size yet, we'll let Cairo handle it
         self.show_all()
         
-    def on_destroy(self, widget: Gtk.Widget):
+    def _on_destroy_main(self, widget: Gtk.Widget):
+        self.on_destroy()
+        
+    def on_destroy(self):
         self.is_alive = False
         self.destroy()
         Gtk.main_quit()

@@ -1,3 +1,4 @@
+from desmume.emulator_mkds import MarioKart
 import numpy as np
 import cairo
 from typing import Callable, TypedDict, Any, cast
@@ -138,17 +139,17 @@ class OverlayOutput(TypedDict):
 
 
 class OverlayWrapper(gym.Wrapper):
-    def __init__(self, env, func: Callable[[Any], OverlayOutput]):
+    def __init__(self, env, func: Callable[[MarioKart], OverlayOutput]):
         super(OverlayWrapper, self).__init__(env)
-        self.env = env
         self.func = func
 
     def render(self):
         if self.render_mode == "rgb_array":
             raw_rgb = cast(np.ndarray, super().render())
-            if not self.env.emu.memory.race_ready:
+            emu: MarioKart = self.get_wrapper_attr('emu')
+            if not emu.memory.race_ready:
                 return raw_rgb
-
+            
             h, w, _ = raw_rgb.shape
             arr = np.zeros((h, w, 4), dtype=np.uint8)
             arr[:, :, :3] = raw_rgb
@@ -156,7 +157,7 @@ class OverlayWrapper(gym.Wrapper):
             surface = cairo.ImageSurface.create_for_data(arr, cairo.FORMAT_RGB24, w, h)
             ctx = cairo.Context(surface)
 
-            out = self.func(self.env)
+            out = self.func(emu)
             if out["points"] is not None:
                 pts, colors = out["points"]
                 draw_points(ctx, pts, colors, radius_scale=5.0)
@@ -173,12 +174,12 @@ class OverlayWrapper(gym.Wrapper):
             return arr[:, :, :3]
 
 
-def collision_overlay(env) -> OverlayOutput:
-    v1 = env.emu.memory.collision_data["v1"].to(env.emu.device)
-    v2 = env.emu.memory.collision_data["v2"].to(env.emu.device)
-    v3 = env.emu.memory.collision_data["v3"].to(env.emu.device)
+def collision_overlay(emu: MarioKart) -> OverlayOutput:
+    v1 = emu.memory.collision_data["v1"].to(emu.device)
+    v2 = emu.memory.collision_data["v2"].to(emu.device)
+    v3 = emu.memory.collision_data["v3"].to(emu.device)
     group = torch.cat([v1, v2, v3], dim=0)
-    v_proj = env.emu.memory.project_to_screen(group, normalize_depth=True)
+    v_proj = emu.memory.project_to_screen(group, normalize_depth=True)
 
     # z filter
     m1, m2, m3 = v_proj["mask"].chunk(3, dim=0)
@@ -190,15 +191,15 @@ def collision_overlay(env) -> OverlayOutput:
         return {"points": None, "lines": None, "triangles": None}
 
     # material color
-    color_map = torch.tensor(COLOR_MAP, dtype=torch.uint8, device=env.emu.device)
-    collision_type = env.emu.memory.collision_data["prism_attribute"]["collision_type"]
+    color_map = torch.tensor(COLOR_MAP, dtype=torch.uint8, device=emu.device)
+    collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"]
     collision_type = collision_type[z_mask]
     floor_mask = (
-        env.emu.memory.collision_data["prism_attribute"]["is_floor"][z_mask] == 1
+        emu.memory.collision_data["prism_attribute"]["is_floor"][z_mask] == 1
     )
-    wall_mask = env.emu.memory.collision_data["prism_attribute"]["is_wall"][z_mask] != 1
+    wall_mask = emu.memory.collision_data["prism_attribute"]["is_wall"][z_mask] != 1
     collision_type = collision_type[floor_mask & wall_mask]
-    color_ids = torch.tensor(collision_type, dtype=torch.int32, device=env.emu.device)
+    color_ids = torch.tensor(collision_type, dtype=torch.int32, device=emu.device)
     colors = color_map[color_ids]
     tri = tri[:, floor_mask & wall_mask]
 
@@ -209,21 +210,21 @@ def collision_overlay(env) -> OverlayOutput:
     return {"points": None, "lines": None, "triangles": (v1, v2, v3, colors)}
 
 
-def sensor_overlay(env) -> OverlayOutput:
-    P = env.emu.memory.driver.position.to(env.emu.device)
+def sensor_overlay(emu: MarioKart) -> OverlayOutput:
+    P = emu.memory.driver.position.to(emu.device)
     P = P.unsqueeze(0)
-    max_dist = env.emu.max_dist
-    n_rays = env.emu.n_rays
-    info = env.emu.memory.obstacle_info(
-        n_rays=n_rays, max_dist=max_dist, device=env.emu.device
+    max_dist = emu.max_dist
+    n_rays = emu.n_rays
+    info = emu.memory.obstacle_info(
+        n_rays=n_rays, max_dist=max_dist, device=emu.device
     )
     R, D = info["position"], info["distance"]
 
-    R_s = env.emu.memory.project_to_screen(R, normalize_depth=True)["screen"]
-    P_s = env.emu.memory.project_to_screen(P, normalize_depth=True)["screen"]
+    R_s = emu.memory.project_to_screen(R, normalize_depth=True)["screen"]
+    P_s = emu.memory.project_to_screen(P, normalize_depth=True)["screen"]
     P_s = P_s.expand_as(R_s)
     P = P.expand_as(R)
-    colors = torch.tensor([1.0, 0.0, 0.0]).to(env.emu.device)
+    colors = torch.tensor([1.0, 0.0, 0.0]).to(emu.device)
     colors = colors.expand_as(P)
     weight = (D - D.mean()) / D.std()
     weight = weight.clamp(0, 1.0)
