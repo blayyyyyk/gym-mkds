@@ -1,7 +1,7 @@
 from desmume.emulator_mkds import MarioKart
 import numpy as np
 import cairo
-from typing import Callable, TypedDict, Any, cast
+from typing import Callable, TypeVar, TypedDict, Any, cast, Generic
 import gymnasium as gym
 import torch
 
@@ -137,9 +137,10 @@ class OverlayOutput(TypedDict):
     lines: tuple[np.ndarray, np.ndarray, np.ndarray] | None
     points: tuple[np.ndarray, np.ndarray] | None
 
+W_T = TypeVar('W_T', bound=gym.Env)
 
 class OverlayWrapper(gym.Wrapper):
-    def __init__(self, env, func: Callable[[MarioKart], OverlayOutput]):
+    def __init__(self, env: W_T, func: Callable[[W_T], OverlayOutput]):
         super(OverlayWrapper, self).__init__(env)
         self.func = func
 
@@ -157,7 +158,7 @@ class OverlayWrapper(gym.Wrapper):
             surface = cairo.ImageSurface.create_for_data(arr, cairo.FORMAT_RGB24, w, h)
             ctx = cairo.Context(surface)
 
-            out = self.func(emu)
+            out = self.func(cast(W_T, self))
             if out["points"] is not None:
                 pts, colors = out["points"]
                 draw_points(ctx, pts, colors, radius_scale=5.0)
@@ -174,7 +175,8 @@ class OverlayWrapper(gym.Wrapper):
             return arr[:, :, :3]
 
 
-def collision_overlay(emu: MarioKart) -> OverlayOutput:
+def collision_overlay(env: OverlayWrapper) -> OverlayOutput:
+    emu = env.get_wrapper_attr('emu')
     v1 = emu.memory.collision_data["v1"].to(emu.device)
     v2 = emu.memory.collision_data["v2"].to(emu.device)
     v3 = emu.memory.collision_data["v3"].to(emu.device)
@@ -210,7 +212,8 @@ def collision_overlay(emu: MarioKart) -> OverlayOutput:
     return {"points": None, "lines": None, "triangles": (v1, v2, v3, colors)}
 
 
-def sensor_overlay(emu: MarioKart) -> OverlayOutput:
+def sensor_overlay(env: OverlayWrapper) -> OverlayOutput:
+    emu = env.get_wrapper_attr('emu')
     P = emu.memory.driver.position.to(emu.device)
     P = P.unsqueeze(0)
     max_dist = emu.max_dist

@@ -110,7 +110,7 @@ class MarioKartEnv(gym.Env):
         
         self.frame_count = 0
         self.prev_progress = 0.0
-        self.emu.reset()
+        
         
         obs = self._get_obs()
         info = self._get_info()

@@ -7,7 +7,7 @@ packages = ["gym_mkds"]
 
 [project]
 name = "gym_mkds"
-version = "0.0.4"
+version = "0.1.0"
 dependencies = [
   "gymnasium",
   "py-desmume-mkds>=0.0.15",
