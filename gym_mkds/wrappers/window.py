@@ -1,6 +1,6 @@
 import numpy as np
 import gymnasium as gym
-from typing import cast
+from typing import Any, cast
 from desmume.emulator import SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT_BOTH
 
 import gi, cairo
@@ -92,7 +92,7 @@ class EnvWindow(WindowBase):
         return True
         
 class VecEnvWindow(WindowBase):
-    def __init__(self, vec_env: gym.vector.AsyncVectorEnv, scale: float = 1.0, colors: list[tuple[float, float, float]] | None = None):
+    def __init__(self, vec_env: gym.vector.AsyncVectorEnv | Any, scale: float = 1.0, colors: list[tuple[float, float, float]] | None = None):
         super(VecEnvWindow, self).__init__(env=vec_env, scale=scale)
         # Default colors if none provided (R, G, B normalized 0-1)
         self.colors = colors or [
@@ -102,12 +102,19 @@ class VecEnvWindow(WindowBase):
         self.frame_width = 4 # Border thickness in pixels
 
     def on_draw(self, widget: Gtk.Widget, ctx: cairo.Context) -> bool:
-        images = self.env.render()
-        if not isinstance(images, (np.ndarray, tuple)):
+        if isinstance(self.env, gym.vector.AsyncVectorEnv):
+            images = self.env.render()
+        else:
+            images = self.env.get_images()
+        
+        if not isinstance(images, (np.ndarray, tuple, list)):
             return True
-        if isinstance(images, tuple):
+        if isinstance(images, (tuple, list)):
             images = np.stack(images)
 
+        if images.ndim == 3:
+            images = images[None, ...]
+        
         N, H, W, C = images.shape
         images = images[:, :H//2, :, :]
         H = images.shape[1]

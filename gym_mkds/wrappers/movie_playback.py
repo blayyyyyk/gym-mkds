@@ -9,14 +9,14 @@ class SaveStateWrapper(gym.Wrapper):
         self.load_slot_id = load_slot_id
         
     def reset(self, *, seed = None, options = None):
-        if self.has_wrapper_attr('emu') and self.load_slot_id:
+        if self.has_wrapper_attr('emu') and self.load_slot_id is not None:
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.load(self.load_slot_id)
         
         return super().reset()
         
     def close(self):
-        if self.has_wrapper_attr('emu') and self.save_slot_id:
+        if self.has_wrapper_attr('emu') and self.save_slot_id is not None:
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.save(self.save_slot_id)
         
@@ -24,12 +24,13 @@ class SaveStateWrapper(gym.Wrapper):
 
 
 class MoviePlaybackWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, path: str):
+    def __init__(self, env: gym.Env, path: str, func: Optional[Callable[[gym.Env], bool]] = None):
         super(MoviePlaybackWrapper, self).__init__(env)
         assert self.has_wrapper_attr(
             "emu"
         ), "Provided environment does not have an emulator attribute. It is recommended to use the MarioKartEnv as your base environment."
         self.movie_path = path
+        self.movie_update_rule = func
 
     def reset(self, *, seed=None, options=None):
         emu: MarioKart = self.get_wrapper_attr('emu')
@@ -42,8 +43,17 @@ class MoviePlaybackWrapper(gym.Wrapper):
             "movie_playing": emu.movie.is_playing()
         }
         
+    def _stop_movie(self):
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        if emu.movie.is_playing():
+            emu.movie.stop()
+        
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
+        if self.movie_update_rule is not None:
+            if not self.movie_update_rule(self):
+                self._stop_movie()
+        
         info |= self._get_info()
         return obs, reward, terminated, truncated, info
 
