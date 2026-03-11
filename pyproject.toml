@@ -12,5 +12,6 @@ dependencies = [
   "gymnasium",
   "py-desmume-mkds>=0.0.15",
   "numpy",
+  "scipy==1.17.1",
   "pre-commit",
 ]
