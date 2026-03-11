@@ -1,9 +1,13 @@
-from desmume.emulator_mkds import MarioKart
-import numpy as np
+from functools import reduce
+from typing import Any, Callable, Generic, Optional, TypedDict, TypeVar, cast
+
 import cairo
-from typing import Callable, TypeVar, TypedDict, Any, cast, Generic
 import gymnasium as gym
+import numpy as np
 import torch
+import trimesh
+from desmume.emulator_mkds import MarioKart
+from scipy.spatial.distance import cdist
 
 COLOR_MAP = [
     # --- DRIVEABLE SURFACES (Grays/Whites) ---
@@ -132,17 +136,28 @@ def draw_triangles(
     draw_lines(ctx, l1, l2, c3)  # assumes draw_lines accepts NumPy arrays
 
 
-class OverlayOutput(TypedDict):
-    triangles: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None
-    lines: tuple[np.ndarray, np.ndarray, np.ndarray] | None
-    points: tuple[np.ndarray, np.ndarray] | None
-
-W_T = TypeVar('W_T', bound=gym.Env)
 
 class OverlayWrapper(gym.Wrapper):
-    def __init__(self, env: W_T, func: Callable[[W_T], OverlayOutput]):
+    def __init__(self, env: gym.Env):
         super(OverlayWrapper, self).__init__(env)
-        self.func = func
+        self.depth_mask = True
+        
+    def __call__(self, env: gym.Env) -> gym.Env:
+        return self.__class__(env)
+
+    def _project(self, *pts: np.ndarray, colors: np.ndarray, depth_mask=True) -> tuple[np.ndarray, ...]:
+        B, C = pts[0].shape
+        pts_cat = np.concat(pts, axis=0)
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        proj = emu.memory.project_to_screen(torch.tensor(pts_cat, dtype=torch.float32), normalize_depth=True)
+        proj_mask = proj["mask"].view(len(pts), B).all(dim=0)
+        proj_pts = proj["screen"].view(len(pts), B, C)
+        proj_pts = proj_pts[:, proj_mask, :] if depth_mask else proj_pts
+        proj_colors = colors[proj_mask] if depth_mask else colors
+        return tuple([x.squeeze(0).cpu().numpy() for x in proj_pts.chunk(len(pts), dim=0)]) + (proj_colors,)
+        
+    def _compute(self) -> tuple[np.ndarray, ...]:
+        ...
 
     def render(self):
         if self.render_mode == "rgb_array":
@@ -150,7 +165,7 @@ class OverlayWrapper(gym.Wrapper):
             emu: MarioKart = self.get_wrapper_attr('emu')
             if not emu.memory.race_ready:
                 return raw_rgb
-            
+
             h, w, _ = raw_rgb.shape
             arr = np.zeros((h, w, 4), dtype=np.uint8)
             arr[:, :, :3] = raw_rgb
@@ -158,160 +173,121 @@ class OverlayWrapper(gym.Wrapper):
             surface = cairo.ImageSurface.create_for_data(arr, cairo.FORMAT_RGB24, w, h)
             ctx = cairo.Context(surface)
 
-            out = self.func(cast(W_T, self))
-            if out["points"] is not None:
-                pts, colors = out["points"]
-                draw_points(ctx, pts, colors, radius_scale=5.0)
-
-            if out["lines"] is not None:
-                pts1, pts2, colors = out["lines"]
+            out = self._compute()
+            if len(out) == 2:
+                pts, colors = out
+                pts, colors = self._project(pts, colors=colors, depth_mask=self.depth_mask)
+                draw_points(ctx, pts[0], colors, radius_scale=5.0)
+            elif len(out) == 3:
+                pts1, pts2, colors = out
+                pts1, pts2, colors = self._project(pts1, pts2, colors=colors, depth_mask=self.depth_mask)
                 draw_lines(ctx, pts1, pts2, colors)
-
-            if out["triangles"] is not None:
-                pts1, pts2, pts3, colors = out["triangles"]
+            elif len(out) == 4:
+                pts1, pts2, pts3, colors = out
+                pts1, pts2, pts3, colors = self._project(pts1, pts2, pts3, colors=colors, depth_mask=self.depth_mask)
                 draw_triangles(ctx, pts1, pts2, pts3, colors)
+            else:
+                raise ValueError("Overlay wrapper draw function must return tuple of size 2, 3, or 4")
 
             surface.flush()
             return arr[:, :, :3]
+            
+class CollisionPrisms(OverlayWrapper):
+    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        emu = self.get_wrapper_attr('emu')
+        v1 = emu.memory.collision_data["v1"].to(emu.device)
+        v2 = emu.memory.collision_data["v2"].to(emu.device)
+        v3 = emu.memory.collision_data["v3"].to(emu.device)
+        tri = torch.stack([v1, v2, v3], dim=0).cpu().numpy()
+    
+        # material color
+        color_map = np.array(COLOR_MAP, dtype=np.uint8)
+        collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"]
+        floor_mask = (
+            emu.memory.collision_data["prism_attribute"]["is_floor"] == 1
+        )
+        wall_mask = emu.memory.collision_data["prism_attribute"]["is_wall"] != 1
+        collision_type = collision_type[floor_mask & wall_mask]
+        colors = color_map[collision_type]
+        tri = tri[:, floor_mask & wall_mask]
+        v1, v2, v3 = np.unstack(tri)
+        return v1, v2, v3, colors
+        
+class RaySweep(OverlayWrapper):
+    # disable depth mask
+    def __init__(self, env: gym.Env):
+        super(RaySweep, self).__init__(env)
+        self.depth_mask = False
+    
+    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        P = emu.memory.driver.position.to(emu.device)
+        P = P.unsqueeze(0)
+        max_dist = emu.max_dist
+        n_rays = emu.n_rays
+        info = emu.memory.obstacle_info(
+            n_rays=n_rays, max_dist=max_dist, device=emu.device
+        )
+        R, D = info["position"], info["distance"]
+        P = P.expand_as(R)
+        colors = torch.tensor([1.0, 0.0, 0.0]).to(emu.device)
+        colors = colors.expand_as(P)
+        weight = (D - D.mean()) / D.std()
+        weight = weight.clamp(0, 1.0)
+        colors = colors.clone()
+        colors[:, 0] -= weight
+        colors[:, 1] += weight
+        colors = colors.cpu().numpy()
+        return R.cpu().numpy(), P.cpu().numpy(), colors
+        
+        
+class TrackBoundary(OverlayWrapper):
+    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        emu: MarioKart = self.get_wrapper_attr('emu')
+    
+        col_data = emu.memory.collision_data
+        col_type = col_data["prism_attribute"]["collision_type"]
+        road_mask = (col_type == 0)
+    
+        v1 = col_data["v1"].cpu().numpy()
+        v2 = col_data["v2"].cpu().numpy()
+        v3 = col_data["v3"].cpu().numpy()
+        triangles = np.stack([v1, v2, v3], axis=1)
+    
+        threshold = 10
+        triangles = np.round(triangles / threshold) * threshold
+        boundary_lines = find_boundary_lines(triangles, road_mask)
+        p0, p1 = np.split(boundary_lines, 2, axis=1)
+        p0 = p0.reshape(-1, 3) # squeeze
+        p1 = p1.reshape(-1, 3) # squeeze
+    
+        colors = np.array([0.0, 0.1, 0.9])[None, :].repeat(p0.shape[0], axis=0)
+        return p0, p1, colors
+        
 
+def compose_overlays(env: gym.Env, *overlay_classes: OverlayWrapper) -> gym.Env:
+    return reduce(lambda e, cls: cls(e), overlay_classes, env)
 
-def collision_overlay(env: OverlayWrapper) -> OverlayOutput:
-    emu = env.get_wrapper_attr('emu')
-    v1 = emu.memory.collision_data["v1"].to(emu.device)
-    v2 = emu.memory.collision_data["v2"].to(emu.device)
-    v3 = emu.memory.collision_data["v3"].to(emu.device)
-    group = torch.cat([v1, v2, v3], dim=0)
-    v_proj = emu.memory.project_to_screen(group, normalize_depth=True)
+def find_boundary_lines(triangles: np.ndarray, road_mask: np.ndarray) -> np.ndarray:
+    """
+    Finds shared lines between road and non-road triangles.
+    """
+    # build mesh
+    raw_vertices = triangles.reshape(-1, 3)
+    raw_faces = np.arange(len(raw_vertices)).reshape(-1, 3)
+    mesh = trimesh.Trimesh(vertices=raw_vertices, faces=raw_faces, process=True, maintain_order=True)
 
-    # z filter
-    m1, m2, m3 = v_proj["mask"].chunk(3, dim=0)
-    z_mask = m1 & m2 & m3
-    tri = v_proj["screen"].view(3, v1.shape[0], -1)
-    tri = tri[:, z_mask]
+    # face adjacency lists
+    f1 = mesh.face_adjacency[:, 0]
+    f2 = mesh.face_adjacency[:, 1]
 
-    if tri.shape[0] == 0:
-        return {"points": None, "lines": None, "triangles": None}
+    # one face is road and neighboring face is off-road
+    boundary_mask = road_mask[f1] != road_mask[f2]
 
-    # material color
-    color_map = torch.tensor(COLOR_MAP, dtype=torch.uint8, device=emu.device)
-    collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"]
-    collision_type = collision_type[z_mask]
-    floor_mask = (
-        emu.memory.collision_data["prism_attribute"]["is_floor"][z_mask] == 1
-    )
-    wall_mask = emu.memory.collision_data["prism_attribute"]["is_wall"][z_mask] != 1
-    collision_type = collision_type[floor_mask & wall_mask]
-    color_ids = torch.tensor(collision_type, dtype=torch.int32, device=emu.device)
-    colors = color_map[color_ids]
-    tri = tri[:, floor_mask & wall_mask]
+    # vertex indices for those specific boundary edges
+    boundary_edge_indices = mesh.face_adjacency_edges[boundary_mask]
 
-    colors = colors.detach().cpu().numpy()
-    tri = tri.detach().cpu().numpy()
-    v1, v2, v3 = np.unstack(tri)
+    # map the indices back to 3D coordinates
+    boundary_lines = mesh.vertices[boundary_edge_indices] # (E, 2, 3)
 
-    return {"points": None, "lines": None, "triangles": (v1, v2, v3, colors)}
-
-
-def sensor_overlay(env: OverlayWrapper) -> OverlayOutput:
-    emu = env.get_wrapper_attr('emu')
-    P = emu.memory.driver.position.to(emu.device)
-    P = P.unsqueeze(0)
-    max_dist = emu.max_dist
-    n_rays = emu.n_rays
-    info = emu.memory.obstacle_info(
-        n_rays=n_rays, max_dist=max_dist, device=emu.device
-    )
-    R, D = info["position"], info["distance"]
-
-    R_s = emu.memory.project_to_screen(R, normalize_depth=True)["screen"]
-    P_s = emu.memory.project_to_screen(P, normalize_depth=True)["screen"]
-    P_s = P_s.expand_as(R_s)
-    P = P.expand_as(R)
-    colors = torch.tensor([1.0, 0.0, 0.0]).to(emu.device)
-    colors = colors.expand_as(P)
-    weight = (D - D.mean()) / D.std()
-    weight = weight.clamp(0, 1.0)
-    colors = colors.clone()
-    colors[:, 0] -= weight
-    colors[:, 1] += weight
-
-    lines = (
-        R_s.detach().cpu().numpy(),
-        P_s.detach().cpu().numpy(),
-        colors.detach().cpu().numpy(),
-    )
-
-    return {"points": None, "lines": lines, "triangles": None}
-
-
-def compose_overlays(env, funcs: list[Callable[[Any], OverlayOutput]]) -> OverlayOutput:
-    """Executes multiple overlay functions and merges their outputs into one."""
-
-    # Containers for the merged data
-    merged_points = {"pts": [], "colors": []}
-    merged_lines = {"pts1": [], "pts2": [], "colors": []}
-    merged_triangles = {"pts1": [], "pts2": [], "pts3": [], "colors": []}
-
-    for func in funcs:
-        out = func(env)
-
-        # Merge Points
-        if out.get("points") is not None:
-            assert out["points"] is not None
-            pts, colors = out["points"]
-            merged_points["pts"].append(pts)
-            merged_points["colors"].append(colors)
-
-        # Merge Lines
-        if out.get("lines") is not None:
-            assert out["lines"] is not None
-            pts1, pts2, colors = out["lines"]
-            merged_lines["pts1"].append(pts1)
-            merged_lines["pts2"].append(pts2)
-            merged_lines["colors"].append(colors)
-
-        # Merge Triangles
-        if out.get("triangles") is not None:
-            assert out["triangles"] is not None
-            pts1, pts2, pts3, colors = out["triangles"]
-            merged_triangles["pts1"].append(pts1)
-            merged_triangles["pts2"].append(pts2)
-            merged_triangles["pts3"].append(pts3)
-            merged_triangles["colors"].append(colors)
-
-    # Final helper to concatenate list of arrays if they exist
-    def concat_or_none(arrays):
-        return np.concatenate(arrays, axis=0) if arrays else None
-
-    return cast(
-        OverlayOutput,
-        {
-            "points": (
-                (
-                    concat_or_none(merged_points["pts"]),
-                    concat_or_none(merged_points["colors"]),
-                )
-                if merged_points["pts"]
-                else None
-            ),
-            "lines": (
-                (
-                    concat_or_none(merged_lines["pts1"]),
-                    concat_or_none(merged_lines["pts2"]),
-                    concat_or_none(merged_lines["colors"]),
-                )
-                if merged_lines["pts1"]
-                else None
-            ),
-            "triangles": (
-                (
-                    concat_or_none(merged_triangles["pts1"]),
-                    concat_or_none(merged_triangles["pts2"]),
-                    concat_or_none(merged_triangles["pts3"]),
-                    concat_or_none(merged_triangles["colors"]),
-                )
-                if merged_triangles["pts1"]
-                else None
-            ),
-        },
-    )
+    return boundary_lines
