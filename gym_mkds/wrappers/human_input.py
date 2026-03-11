@@ -1,6 +1,7 @@
 import gymnasium as gym
 import pynput
 from desmume.controls import keymask, Keys
+from desmume.emulator_mkds import MarioKart
 
 USER_KEYMAP = {
     "w": Keys.KEY_UP,
@@ -48,13 +49,27 @@ class HumanInputWrapper(gym.Wrapper):
         self.listener.start()
         info, obs = super().reset(seed=seed, options=options)
         return info, obs
+        
+    def _special_keys(self, key: str):
+        if self.has_wrapper_attr('save_slot_id') and key == "p":
+            slot_id = self.get_wrapper_attr('save_slot_id')
+            emu: MarioKart = self.get_wrapper_attr('emu')
+            emu.savestate.load(slot_id)
+        elif self.has_wrapper_attr('save_slot_id') and key == "o":
+            slot_id = self.get_wrapper_attr('save_slot_id')
+            emu: MarioKart = self.get_wrapper_attr('emu')
+            emu.savestate.save(slot_id)
 
     def step(self, action):
         mask = 0
-        for key in self.input_state:
-            if not key in USER_KEYMAP:
-                continue
-            mask |= keymask(USER_KEYMAP[key])
+        try:
+            for key in self.input_state:
+                self._special_keys(key)
+                if not key in USER_KEYMAP:
+                    continue
+                mask |= keymask(USER_KEYMAP[key])
+        except RuntimeError:
+            pass
 
         obs, reward, terminated, truncated, info = super().step(mask)
 
