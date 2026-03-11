@@ -7,11 +7,12 @@ packages = ["gym_mkds"]
 
 [project]
 name = "gym_mkds"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
   "gymnasium",
   "py-desmume-mkds>=0.0.15",
   "numpy",
+  "trimesh==4.11.3"
   "scipy==1.17.1",
   "pre-commit",
 ]
