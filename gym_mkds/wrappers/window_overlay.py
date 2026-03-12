@@ -7,8 +7,16 @@ import numpy as np
 import torch
 import trimesh
 from desmume.emulator_mkds import MarioKart
+from desmume.vector import generate_plane_vectors
 from scipy.spatial.distance import cdist
+from desmume.vector import generate_plane_vectors
+import matplotlib.cm as cm
+import matplotlib.colors as plt_colors
+from gym_mkds.wrappers.sweeping_ray import get_track_lines
+import cv2
+from PIL import Image, ImageDraw, ImageFont
 
+KEY_LABELS = ['X', 'Y', 'L', 'R', '↓', '↑', '←', '→', '8', '9', 'B', 'A']
 COLOR_MAP = [
     # --- DRIVEABLE SURFACES (Grays/Whites) ---
     [128, 128, 128],  # 0:  Road (Standard Gray)
@@ -136,12 +144,89 @@ def draw_triangles(
     draw_lines(ctx, l1, l2, c3)  # assumes draw_lines accepts NumPy arrays
 
 
-
-class OverlayWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env):
-        super(OverlayWrapper, self).__init__(env)
-        self.depth_mask = True
+class ControllerDisplay(gym.ObservationWrapper):
+    def __init__(self, env: gym.Env, n_physical_keys: int = 12):
+        super(ControllerDisplay, self).__init__(env)
         
+        self.n_physical_keys = n_physical_keys
+        self.input_mask = np.zeros((n_physical_keys,), dtype=np.bool)
+        
+
+    def _is_pressed(self, key: str) -> bool:
+        """
+        Your ambiguous function to check if a key is pressed.
+        Replace this logic with whatever state tracks your current inputs!
+        """
+        # Example: return key in self.unwrapped.current_pressed_keys
+        return False 
+        
+    def observation(self, observation):
+        keymask = observation["keymask"]
+        binary_string = bin(keymask.tolist()[0])[2:]
+        padded_binary = binary_string.zfill(self.n_physical_keys)
+        self.input_mask = np.array([int(b) == 1 for b in padded_binary])
+        return observation
+
+    def render(self):
+        frame = super().render()
+        if self.render_mode == "rgb_array" and frame is not None:
+            assert isinstance(frame, np.ndarray) and not isinstance(frame, list)
+            
+            H = 40
+            W = frame.shape[1]
+            C = frame.shape[2]
+            N = self.input_mask.shape[0]
+            
+            dashboard = np.zeros((H, W, C), dtype=frame.dtype)
+            button_width = W // N
+            pad = W % N
+            
+            active_area = dashboard[:, :W - pad, :].reshape(H, N, button_width, C)
+            active_area[:, self.input_mask, :, :] = 255
+            
+            pil_dash = Image.fromarray(dashboard)
+            draw = ImageDraw.Draw(pil_dash)
+            
+            try:
+                font = ImageFont.truetype("arial.ttf", 20) 
+            except IOError:
+                try:
+                    font = ImageFont.truetype("/Users/blakemoody/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", 20)
+                except IOError:
+                    # font fallback
+                    font = ImageFont.load_default()
+            
+            for i in range(N):
+                label = KEY_LABELS[i] if i < len(KEY_LABELS) else "?"
+                
+                bbox = draw.textbbox((0, 0), label, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                
+                text_x = (i * button_width) + (button_width // 2) - (text_w // 2)
+                text_y = (H // 2) - (text_h // 2) - 2
+                
+                is_pressed = self.input_mask[i]
+                fontColor = (0, 0, 0) if is_pressed else (255, 255, 255)
+                
+                draw.text((text_x, text_y), label, font=font, fill=fontColor)
+            
+            dashboard = np.array(pil_dash)
+            alpha = 0.5
+            frame[:H, :, :] = (frame[:H, :, :] * (1 - alpha)) + (dashboard * alpha)
+                    
+            return frame
+            
+        return frame
+            
+
+
+class CairoWrapper(gym.ObservationWrapper):
+    def __init__(self, env: gym.Env):
+        super(CairoWrapper, self).__init__(env)
+        self.depth_mask = True
+        self.prev_observation = None
+
     def __call__(self, env: gym.Env) -> gym.Env:
         return self.__class__(env)
 
@@ -155,9 +240,12 @@ class OverlayWrapper(gym.Wrapper):
         proj_pts = proj_pts[:, proj_mask, :] if depth_mask else proj_pts
         proj_colors = colors[proj_mask] if depth_mask else colors
         return tuple([x.squeeze(0).cpu().numpy() for x in proj_pts.chunk(len(pts), dim=0)]) + (proj_colors,)
-        
+
     def _compute(self) -> tuple[np.ndarray, ...]:
         ...
+        
+    def observation(self, observation):
+        return observation
 
     def render(self):
         if self.render_mode == "rgb_array":
@@ -191,15 +279,15 @@ class OverlayWrapper(gym.Wrapper):
 
             surface.flush()
             return arr[:, :, :3]
-            
-class CollisionPrisms(OverlayWrapper):
+
+class CollisionPrisms(CairoWrapper):
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         emu = self.get_wrapper_attr('emu')
         v1 = emu.memory.collision_data["v1"].to(emu.device)
         v2 = emu.memory.collision_data["v2"].to(emu.device)
         v3 = emu.memory.collision_data["v3"].to(emu.device)
         tri = torch.stack([v1, v2, v3], dim=0).cpu().numpy()
-    
+
         # material color
         color_map = np.array(COLOR_MAP, dtype=np.uint8)
         collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"]
@@ -212,15 +300,17 @@ class CollisionPrisms(OverlayWrapper):
         tri = tri[:, floor_mask & wall_mask]
         v1, v2, v3 = np.unstack(tri)
         return v1, v2, v3, colors
-        
-class RaySweep(OverlayWrapper):
+
+class RaySweepOverlay(CairoWrapper):
     # disable depth mask
     def __init__(self, env: gym.Env):
-        super(RaySweep, self).__init__(env)
+        super(RaySweepOverlay, self).__init__(env)
         self.depth_mask = False
-    
+
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        
         emu: MarioKart = self.get_wrapper_attr('emu')
+        
         P = emu.memory.driver.position.to(emu.device)
         P = P.unsqueeze(0)
         max_dist = emu.max_dist
@@ -239,55 +329,59 @@ class RaySweep(OverlayWrapper):
         colors[:, 1] += weight
         colors = colors.cpu().numpy()
         return R.cpu().numpy(), P.cpu().numpy(), colors
-        
-        
-class TrackBoundary(OverlayWrapper):
+
+
+class TrackBoundary(CairoWrapper):
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         emu: MarioKart = self.get_wrapper_attr('emu')
-    
-        col_data = emu.memory.collision_data
-        col_type = col_data["prism_attribute"]["collision_type"]
-        road_mask = (col_type == 0)
-    
-        v1 = col_data["v1"].cpu().numpy()
-        v2 = col_data["v2"].cpu().numpy()
-        v3 = col_data["v3"].cpu().numpy()
-        triangles = np.stack([v1, v2, v3], axis=1)
-    
-        threshold = 10
-        triangles = np.round(triangles / threshold) * threshold
-        boundary_lines = find_boundary_lines(triangles, road_mask)
+        boundary_lines = get_track_lines(emu)
         p0, p1 = np.split(boundary_lines, 2, axis=1)
         p0 = p0.reshape(-1, 3) # squeeze
         p1 = p1.reshape(-1, 3) # squeeze
-    
+
         colors = np.array([0.0, 0.1, 0.9])[None, :].repeat(p0.shape[0], axis=0)
         return p0, p1, colors
-        
 
-def compose_overlays(env: gym.Env, *overlay_classes: OverlayWrapper) -> gym.Env:
+
+def compose_overlays(env: gym.Env, *overlay_classes: CairoWrapper) -> gym.Env:
     return reduce(lambda e, cls: cls(e), overlay_classes, env)
 
-def find_boundary_lines(triangles: np.ndarray, road_mask: np.ndarray) -> np.ndarray:
-    """
-    Finds shared lines between road and non-road triangles.
-    """
-    # build mesh
-    raw_vertices = triangles.reshape(-1, 3)
-    raw_faces = np.arange(len(raw_vertices)).reshape(-1, 3)
-    mesh = trimesh.Trimesh(vertices=raw_vertices, faces=raw_faces, process=True, maintain_order=True)
 
-    # face adjacency lists
-    f1 = mesh.face_adjacency[:, 0]
-    f2 = mesh.face_adjacency[:, 1]
+class SweepingRayOverlay(CairoWrapper):
+    # disable depth mask
+    def __init__(self, env: gym.Env, color_map: str = "RdYlGn"):
+        super(SweepingRayOverlay, self).__init__(env)
+        assert isinstance(env.observation_space, gym.spaces.Dict)
+        assert "wall_distances" in env.observation_space.spaces, "Observation space is missing 'track_distances'. First wrap env in gym_mkds.wrappers.SweepingRay."
+        self.depth_mask = False
+        self.color_map = color_map
+        self.track_distances: np.ndarray | None = None
+        
+    def observation(self, observation):
+        self.track_distances = observation["wall_distances"]
+        return super().observation(observation)
+    
+    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        assert self.track_distances is not None
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        n_rays: int = self.get_wrapper_attr('n_rays')
 
-    # one face is road and neighboring face is off-road
-    boundary_mask = road_mask[f1] != road_mask[f2]
+        # driver info
+        position = emu.memory.driver.position
+        mtx = emu.memory.driver.mainMtx[:3, :].T # 3x3 rotation matrix (row-major)
 
-    # vertex indices for those specific boundary edges
-    boundary_edge_indices = mesh.face_adjacency_edges[boundary_mask]
+        # ray generation
+        ray_origin, ray_direction = generate_plane_vectors(n_rays, 180, mtx, position)
+        ray_direction= ray_direction.cpu().numpy()
+        p1 = ray_origin.cpu().numpy()
 
-    # map the indices back to 3D coordinates
-    boundary_lines = mesh.vertices[boundary_edge_indices] # (E, 2, 3)
+        # collect ray intersections
+        t = self.track_distances
+        p0 = ray_direction * t[:, None] + p1
+        
+        # color map
+        norm = plt_colors.Normalize(vmin=t.min(), vmax=t.max())
+        cmap = cm.get_cmap(self.color_map)
+        colors = cmap(norm(t))[:, :3]
 
-    return boundary_lines
+        return p0, p1, colors

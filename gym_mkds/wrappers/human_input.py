@@ -1,6 +1,6 @@
 import gymnasium as gym
 import pynput
-from desmume.controls import keymask, Keys
+from desmume.controls import Keys, keymask
 from desmume.emulator_mkds import MarioKart
 
 USER_KEYMAP = {
@@ -21,12 +21,13 @@ USER_KEYMAP = {
     "down": Keys.KEY_DOWN,
 }
 
-class HumanInputWrapper(gym.Wrapper):
-    def __init__(self, env):
-        super(HumanInputWrapper, self).__init__(env)
+class HumanInput(gym.ActionWrapper):
+    def __init__(self, env, keymap: dict[str, int] = USER_KEYMAP):
+        super(HumanInput, self).__init__(env)
         self.listener = pynput.keyboard.Listener(
             on_press=self._on_press, on_release=self._on_release
         )
+        self.keymap = keymap
         self.input_state = set()
 
     def _on_press(self, key):
@@ -49,7 +50,7 @@ class HumanInputWrapper(gym.Wrapper):
         self.listener.start()
         info, obs = super().reset(seed=seed, options=options)
         return info, obs
-        
+
     def _special_keys(self, key: str):
         if self.has_wrapper_attr('save_slot_id') and key == "p":
             slot_id = self.get_wrapper_attr('save_slot_id')
@@ -60,24 +61,19 @@ class HumanInputWrapper(gym.Wrapper):
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.save(slot_id)
 
-    def step(self, action):
+    def action(self, action):
         mask = 0
         try:
             for key in self.input_state:
                 self._special_keys(key)
-                if not key in USER_KEYMAP:
+                if not key in self.keymap:
                     continue
-                mask |= keymask(USER_KEYMAP[key])
+                mask |= keymask(self.keymap[key])
         except RuntimeError:
             pass
 
-        obs, reward, terminated, truncated, info = super().step(mask)
-
-        info = {**info, "keymask": mask, "input_state": self.input_state}
-
-        return obs, reward, terminated, truncated, info
+        return mask
 
     def close(self):
         self.listener.stop()
         super().close()
-        

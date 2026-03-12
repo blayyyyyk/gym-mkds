@@ -1,25 +1,27 @@
-from desmume.emulator_mkds import MarioKart
-import gymnasium as gym
 from typing import Any, Callable, Optional
+
+import gymnasium as gym
+from desmume.emulator_mkds import MarioKart
+
 
 class SaveStateWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env, save_slot_id: Optional[int] = None, load_slot_id: Optional[int] = None):
         super().__init__(env)
         self.save_slot_id = save_slot_id
         self.load_slot_id = load_slot_id
-        
+
     def reset(self, *, seed = None, options = None):
         if self.has_wrapper_attr('emu') and self.load_slot_id is not None:
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.load(self.load_slot_id)
-        
+
         return super().reset()
-        
+
     def close(self):
         if self.has_wrapper_attr('emu') and self.save_slot_id is not None:
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.save(self.save_slot_id)
-        
+
         super().close()
 
 
@@ -36,24 +38,24 @@ class MoviePlaybackWrapper(gym.Wrapper):
         emu: MarioKart = self.get_wrapper_attr('emu')
         emu.movie.play(self.movie_path)
         return super().reset()
-        
+
     def _get_info(self):
         emu: MarioKart = self.get_wrapper_attr('emu')
         return {
             "movie_playing": emu.movie.is_playing()
         }
-        
+
     def _stop_movie(self):
         emu: MarioKart = self.get_wrapper_attr('emu')
         if emu.movie.is_playing():
             emu.movie.stop()
-        
+
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         if self.movie_update_rule is not None:
             if not self.movie_update_rule(self):
                 self._stop_movie()
-        
+
         info |= self._get_info()
         return obs, reward, terminated, truncated, info
 
@@ -63,4 +65,3 @@ class MoviePlaybackWrapper(gym.Wrapper):
             emu.movie.stop()
 
         super().close()
-        

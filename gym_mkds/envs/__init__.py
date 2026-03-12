@@ -1,1 +1,2 @@
-from gym_mkds.envs.mkds import MarioKartEnv, MarioKart
+from gym_mkds.envs.MarioKartEnv_v0 import MarioKartEnv
+from gym_mkds.envs.MarioKartEnv_v1 import MarioKartCoreEnv

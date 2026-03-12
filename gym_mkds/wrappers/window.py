@@ -1,12 +1,15 @@
-import numpy as np
-import gymnasium as gym
-from typing import Any, cast
-from desmume.emulator import SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT_BOTH
+from typing import Any, TypeVar, Union, cast
 
-import gi, cairo
+import cairo
+import gi
+import gymnasium as gym
+import numpy as np
+from desmume.emulator import SCREEN_HEIGHT, SCREEN_HEIGHT_BOTH, SCREEN_WIDTH
+
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gtk, Gdk, GLib
+from gi.repository import Gdk, GLib, Gtk
+
 
 def tile_images(images: np.ndarray) -> np.ndarray:
     """Reduces the image dimensions by tiling the images into a single image."""
@@ -26,8 +29,10 @@ def tile_images(images: np.ndarray) -> np.ndarray:
     )
     return out
 
-class WindowBase(Gtk.Window):
-    def __init__(self, env, scale: float = 1.0):
+ENV_T = TypeVar('ENV_T', bound=Union[gym.Env, gym.vector.VectorEnv])
+
+class WindowBase[ENV_T](Gtk.Window):
+    def __init__(self, env: ENV_T, scale: float = 1.0):
         super(WindowBase, self).__init__()
         self.set_title("MarioKart Async Training")
         self.width = int(round(SCREEN_WIDTH * scale))
@@ -37,66 +42,66 @@ class WindowBase(Gtk.Window):
         self.env = env
         self.is_alive = True
         self.scale = scale
-        
+
         self.drawing_area = Gtk.DrawingArea()
         self.drawing_area.connect("draw", self.on_draw)
         self.add(self.drawing_area)
-        
+
         self.connect("destroy", self._on_destroy_main)
         # We don't set a default size yet, we'll let Cairo handle it
         self.show_all()
-        
+
     def _on_destroy_main(self, widget: Gtk.Widget):
         self.on_destroy()
-        
+
     def on_destroy(self):
         self.is_alive = False
         self.destroy()
         Gtk.main_quit()
-        
+
     def update(self):
         # Queue a redraw for the main GTK window
         self.drawing_area.queue_draw()
-        
+
         # Process GTK events
         while Gtk.events_pending():
             Gtk.main_iteration()
-        
+
     def on_draw(self, widget: Gtk.Widget, ctx: cairo.Context) -> bool:
         ...
-        
-class EnvWindow(WindowBase):
+
+class EnvWindow(WindowBase[gym.Env]):
     def __init__(self, env: gym.Env, scale: float = 1.0):
-        super(EnvWindow, self).__init__(env, scale)
-        
+        super().__init__(env, scale)
+
     def on_draw(self, widget: Gtk.Widget, ctx: cairo.Context) -> bool:
         arr = cast(np.ndarray, self.env.render())
         if not isinstance(arr, np.ndarray):
             return True
-            
+
         height, width, _ = arr.shape
+        self.resize(width * self.scale, height * self.scale)
         new_arr = np.ones((height, width, 4), dtype=np.uint8)
         new_arr[:, :, :3] = arr
-        half_height = height // 2
         top = np.ascontiguousarray(new_arr)
-        
+
         upper_image = cairo.ImageSurface.create_for_data(
             top.data, cairo.FORMAT_RGB24, width, height
         )
-        
+
         ctx.scale(self.scale, self.scale)
         ctx.set_source_surface(upper_image, 0, 0)
         ctx.get_source().set_filter(cairo.FILTER_NEAREST)
         ctx.paint()
-        
+
         return True
-        
-class VecEnvWindow(WindowBase):
+
+class VecEnvWindow(WindowBase[gym.vector.VectorEnv]):
     def __init__(self, vec_env: gym.vector.AsyncVectorEnv | Any, scale: float = 1.0, colors: list[tuple[float, float, float]] | None = None):
         super(VecEnvWindow, self).__init__(env=vec_env, scale=scale)
         # Default colors if none provided (R, G, B normalized 0-1)
         self.colors = colors or [
-            (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), 
+            (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
             (1.0, 1.0, 0.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)
         ]
         self.frame_width = 4 # Border thickness in pixels
@@ -106,7 +111,7 @@ class VecEnvWindow(WindowBase):
             images = self.env.render()
         else:
             images = self.env.get_images()
-        
+
         if not isinstance(images, (np.ndarray, tuple, list)):
             return True
         if isinstance(images, (tuple, list)):
@@ -114,7 +119,7 @@ class VecEnvWindow(WindowBase):
 
         if images.ndim == 3:
             images = images[None, ...]
-        
+
         N, H, W, C = images.shape
         images = images[:, :H//2, :, :]
         H = images.shape[1]
@@ -133,11 +138,11 @@ class VecEnvWindow(WindowBase):
         for i in range(N):
             col = i % cols
             row = i // cols
-            
+
             # Calculate top-left position for this tile's frame
             x = col * (W + self.frame_width * 2)
             y = row * (H + self.frame_width * 2)
-            
+
             # 1. Draw the Frame
             color = self.colors[i % len(self.colors)]
             ctx.set_source_rgb(*color)
@@ -153,7 +158,7 @@ class VecEnvWindow(WindowBase):
             surface = cairo.ImageSurface.create_for_data(
                 np.ascontiguousarray(rgba_buffer), cairo.FORMAT_RGB24, W, H, stride
             )
-            
+
             ctx.set_source_surface(surface, x + self.frame_width, y + self.frame_width)
             ctx.get_source().set_filter(cairo.FILTER_NEAREST)
             ctx.paint()
@@ -162,17 +167,17 @@ class VecEnvWindow(WindowBase):
             label_text = f"Agent {i}"
             ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
             ctx.set_font_size(12)
-            
+
             # Measure text to align it to the right
             extents = ctx.text_extents(label_text)
             text_x = x + (W + self.frame_width) - extents.width - 5
             text_y = y + self.frame_width + extents.height + 5
-            
+
             # Draw a small background for text readability
             ctx.set_source_rgba(0, 0, 0, 0.6)
             ctx.rectangle(text_x - 2, text_y - extents.height - 2, extents.width + 4, extents.height + 4)
             ctx.fill()
-            
+
             # Draw actual text in the frame color
             ctx.set_source_rgb(*color)
             ctx.move_to(text_x, text_y)
