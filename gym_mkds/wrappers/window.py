@@ -3,6 +3,7 @@ from typing import Any, TypeVar, Union, cast
 import cairo
 import gi
 import gymnasium as gym
+from gymnasium.vector import AsyncVectorEnv
 import numpy as np
 from desmume.emulator import SCREEN_HEIGHT, SCREEN_HEIGHT_BOTH, SCREEN_WIDTH
 
@@ -184,3 +185,49 @@ class VecEnvWindow(WindowBase[gym.vector.VectorEnv]):
             ctx.show_text(label_text)
 
         return True
+
+
+class GtkWindow(gym.Wrapper):
+    def __init__(self, env: gym.Env, scale: float = 1.0):
+        super().__init__(env)
+        self.window = None
+        self.scale = scale
+        
+    def reset(self, *args, seed=None, options=None):
+        obs, info = super().reset()
+        self.window = EnvWindow(self.env, scale=self.scale)
+        return obs, info
+        
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        
+        if self.window is not None:
+            self.window.update()
+        
+        return obs, reward, terminated, truncated, info
+        
+
+class GtkVecWindow(gym.vector.VectorWrapper):
+    def __init__(self, env: AsyncVectorEnv, scale: float = 1.0, colors: list[tuple[float, float, float]] | None = None):
+        super().__init__(env)
+        self.window = None
+        self.scale = scale
+        self.colors = colors
+        
+    def close(self, **kwargs):
+        if self.window is None: return
+        self.window.destroy()
+        super().close()
+        
+    def reset(self, *args, seed=None, options=None):
+        obs, info = super().reset()
+        self.window = VecEnvWindow(self.env, scale=self.scale, colors=self.colors)
+        return obs, info
+        
+    def step(self, actions):
+        obs, reward, terminated, truncated, info = super().step(actions)
+        
+        if self.window is not None:
+            self.window.update()
+        
+        return obs, reward, terminated, truncated, info

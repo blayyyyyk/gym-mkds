@@ -1,20 +1,17 @@
 from functools import reduce
-from typing import Any, Callable, Generic, Optional, TypedDict, TypeVar, cast
+from typing import cast
 
 import cairo
 import gymnasium as gym
-import numpy as np
-import torch
-import trimesh
-from desmume.emulator_mkds import MarioKart
-from desmume.vector import generate_plane_vectors
-from scipy.spatial.distance import cdist
-from desmume.vector import generate_plane_vectors
 import matplotlib.cm as cm
 import matplotlib.colors as plt_colors
-from gym_mkds.wrappers.sweeping_ray import get_track_lines
-import cv2
+import numpy as np
+import torch
+from desmume.emulator_mkds import MarioKart
+from desmume.vector import generate_plane_vectors
 from PIL import Image, ImageDraw, ImageFont
+
+from gym_mkds.wrappers.sweeping_ray import get_track_lines
 
 KEY_LABELS = ['X', 'Y', 'L', 'R', '↓', '↑', '←', '→', '8', '9', 'B', 'A']
 COLOR_MAP = [
@@ -147,10 +144,10 @@ def draw_triangles(
 class ControllerDisplay(gym.ObservationWrapper):
     def __init__(self, env: gym.Env, n_physical_keys: int = 12):
         super(ControllerDisplay, self).__init__(env)
-        
+
         self.n_physical_keys = n_physical_keys
         self.input_mask = np.zeros((n_physical_keys,), dtype=np.bool)
-        
+
 
     def _is_pressed(self, key: str) -> bool:
         """
@@ -158,8 +155,8 @@ class ControllerDisplay(gym.ObservationWrapper):
         Replace this logic with whatever state tracks your current inputs!
         """
         # Example: return key in self.unwrapped.current_pressed_keys
-        return False 
-        
+        return False
+
     def observation(self, observation):
         keymask = observation["keymask"]
         binary_string = bin(keymask.tolist()[0])[2:]
@@ -171,54 +168,54 @@ class ControllerDisplay(gym.ObservationWrapper):
         frame = super().render()
         if self.render_mode == "rgb_array" and frame is not None:
             assert isinstance(frame, np.ndarray) and not isinstance(frame, list)
-            
+
             H = 40
             W = frame.shape[1]
             C = frame.shape[2]
             N = self.input_mask.shape[0]
-            
+
             dashboard = np.zeros((H, W, C), dtype=frame.dtype)
             button_width = W // N
             pad = W % N
-            
+
             active_area = dashboard[:, :W - pad, :].reshape(H, N, button_width, C)
             active_area[:, self.input_mask, :, :] = 255
-            
+
             pil_dash = Image.fromarray(dashboard)
             draw = ImageDraw.Draw(pil_dash)
-            
+
             try:
-                font = ImageFont.truetype("arial.ttf", 20) 
+                font = ImageFont.truetype("arial.ttf", 20)
             except IOError:
                 try:
                     font = ImageFont.truetype("/Users/blakemoody/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", 20)
                 except IOError:
                     # font fallback
                     font = ImageFont.load_default()
-            
+
             for i in range(N):
                 label = KEY_LABELS[i] if i < len(KEY_LABELS) else "?"
-                
+
                 bbox = draw.textbbox((0, 0), label, font=font)
                 text_w = bbox[2] - bbox[0]
                 text_h = bbox[3] - bbox[1]
-                
+
                 text_x = (i * button_width) + (button_width // 2) - (text_w // 2)
                 text_y = (H // 2) - (text_h // 2) - 2
-                
+
                 is_pressed = self.input_mask[i]
                 fontColor = (0, 0, 0) if is_pressed else (255, 255, 255)
-                
+
                 draw.text((text_x, text_y), label, font=font, fill=fontColor)
-            
+
             dashboard = np.array(pil_dash)
             alpha = 0.5
             frame[:H, :, :] = (frame[:H, :, :] * (1 - alpha)) + (dashboard * alpha)
-                    
+
             return frame
-            
+
         return frame
-            
+
 
 
 class CairoWrapper(gym.ObservationWrapper):
@@ -243,7 +240,7 @@ class CairoWrapper(gym.ObservationWrapper):
 
     def _compute(self) -> tuple[np.ndarray, ...]:
         ...
-        
+
     def observation(self, observation):
         return observation
 
@@ -308,9 +305,9 @@ class RaySweepOverlay(CairoWrapper):
         self.depth_mask = False
 
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        
+
         emu: MarioKart = self.get_wrapper_attr('emu')
-        
+
         P = emu.memory.driver.position.to(emu.device)
         P = P.unsqueeze(0)
         max_dist = emu.max_dist
@@ -349,18 +346,18 @@ def compose_overlays(env: gym.Env, *overlay_classes: CairoWrapper) -> gym.Env:
 
 class SweepingRayOverlay(CairoWrapper):
     # disable depth mask
-    def __init__(self, env: gym.Env, color_map: str = "RdYlGn"):
+    def __init__(self, env: gym.Env, color_map: str = "viridis"):
         super(SweepingRayOverlay, self).__init__(env)
         assert isinstance(env.observation_space, gym.spaces.Dict)
         assert "wall_distances" in env.observation_space.spaces, "Observation space is missing 'track_distances'. First wrap env in gym_mkds.wrappers.SweepingRay."
         self.depth_mask = False
         self.color_map = color_map
         self.track_distances: np.ndarray | None = None
-        
+
     def observation(self, observation):
         self.track_distances = observation["wall_distances"]
         return super().observation(observation)
-    
+
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         assert self.track_distances is not None
         emu: MarioKart = self.get_wrapper_attr('emu')
@@ -378,7 +375,7 @@ class SweepingRayOverlay(CairoWrapper):
         # collect ray intersections
         t = self.track_distances
         p0 = ray_direction * t[:, None] + p1
-        
+
         # color map
         norm = plt_colors.Normalize(vmin=t.min(), vmax=t.max())
         cmap = cm.get_cmap(self.color_map)

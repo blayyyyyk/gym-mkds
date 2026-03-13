@@ -38,7 +38,7 @@ class SweepingRay(gym.ObservationWrapper):
         normal = mtx[1].cpu().numpy()
 
         # ray generation
-        ray_origin, ray_direction = generate_plane_vectors(24, 180, mtx, position)
+        ray_origin, ray_direction = generate_plane_vectors(self.n_rays, 180, mtx, position)
         ray_direction= ray_direction.cpu().numpy()
 
         position = position.cpu().numpy()
