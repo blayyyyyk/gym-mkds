@@ -140,18 +140,14 @@ class VecEnvWindow(WindowBase[gym.vector.VectorEnv]):
             col = i % cols
             row = i // cols
 
-            # Calculate top-left position for this tile's frame
             x = col * (W + self.frame_width * 2)
             y = row * (H + self.frame_width * 2)
 
-            # 1. Draw the Frame
             color = self.colors[i % len(self.colors)]
             ctx.set_source_rgb(*color)
             ctx.rectangle(x, y, W + self.frame_width * 2, H + self.frame_width * 2)
             ctx.fill()
 
-            # 2. Draw the Game Image
-            # Pad image to 4 channels for Cairo compatibility
             img = images[i]
             rgba_buffer = np.zeros((H, W, 4), dtype=np.uint8)
             rgba_buffer[:, :, :3] = img
@@ -164,22 +160,18 @@ class VecEnvWindow(WindowBase[gym.vector.VectorEnv]):
             ctx.get_source().set_filter(cairo.FILTER_NEAREST)
             ctx.paint()
 
-            # 3. Draw the Label (Top Right of the specific tile)
             label_text = f"Agent {i}"
             ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
             ctx.set_font_size(12)
 
-            # Measure text to align it to the right
             extents = ctx.text_extents(label_text)
             text_x = x + (W + self.frame_width) - extents.width - 5
             text_y = y + self.frame_width + extents.height + 5
 
-            # Draw a small background for text readability
             ctx.set_source_rgba(0, 0, 0, 0.6)
             ctx.rectangle(text_x - 2, text_y - extents.height - 2, extents.width + 4, extents.height + 4)
             ctx.fill()
 
-            # Draw actual text in the frame color
             ctx.set_source_rgb(*color)
             ctx.move_to(text_x, text_y)
             ctx.show_text(label_text)

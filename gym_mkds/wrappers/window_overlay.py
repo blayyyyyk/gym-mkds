@@ -231,12 +231,13 @@ class CairoWrapper(gym.ObservationWrapper):
         B, C = pts[0].shape
         pts_cat = np.concat(pts, axis=0)
         emu: MarioKart = self.get_wrapper_attr('emu')
-        proj = emu.memory.project_to_screen(torch.tensor(pts_cat, dtype=torch.float32), normalize_depth=True)
-        proj_mask = proj["mask"].view(len(pts), B).all(dim=0)
-        proj_pts = proj["screen"].view(len(pts), B, C)
+        proj = emu.memory.project_to_screen(pts_cat, normalize_depth=True)
+        proj_mask = proj["mask"].reshape(len(pts), B).all(axis=0)
+        proj_pts = proj["screen"].reshape(len(pts), B, C)
         proj_pts = proj_pts[:, proj_mask, :] if depth_mask else proj_pts
         proj_colors = colors[proj_mask] if depth_mask else colors
-        return tuple([x.squeeze(0).cpu().numpy() for x in proj_pts.chunk(len(pts), dim=0)]) + (proj_colors,)
+        chunks = np.split(proj_pts, len(pts), axis=0)
+        return tuple([x.squeeze(0) for x in chunks]) + (proj_colors,)
 
     def _compute(self) -> tuple[np.ndarray, ...]:
         ...
@@ -298,35 +299,6 @@ class CollisionPrisms(CairoWrapper):
         v1, v2, v3 = np.unstack(tri)
         return v1, v2, v3, colors
 
-class RaySweepOverlay(CairoWrapper):
-    # disable depth mask
-    def __init__(self, env: gym.Env):
-        super(RaySweepOverlay, self).__init__(env)
-        self.depth_mask = False
-
-    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-
-        emu: MarioKart = self.get_wrapper_attr('emu')
-
-        P = emu.memory.driver.position.to(emu.device)
-        P = P.unsqueeze(0)
-        max_dist = emu.max_dist
-        n_rays = emu.n_rays
-        info = emu.memory.obstacle_info(
-            n_rays=n_rays, max_dist=max_dist, device=emu.device
-        )
-        R, D = info["position"], info["distance"]
-        P = P.expand_as(R)
-        colors = torch.tensor([1.0, 0.0, 0.0]).to(emu.device)
-        colors = colors.expand_as(P)
-        weight = (D - D.mean()) / D.std()
-        weight = weight.clamp(0, 1.0)
-        colors = colors.clone()
-        colors[:, 0] -= weight
-        colors[:, 1] += weight
-        colors = colors.cpu().numpy()
-        return R.cpu().numpy(), P.cpu().numpy(), colors
-
 
 class TrackBoundary(CairoWrapper):
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -364,13 +336,12 @@ class SweepingRayOverlay(CairoWrapper):
         n_rays: int = self.get_wrapper_attr('n_rays')
 
         # driver info
-        position = emu.memory.driver.position
-        mtx = emu.memory.driver.mainMtx[:3, :].T # 3x3 rotation matrix (row-major)
+        position = emu.memory.driver_position
+        mtx = emu.memory.driver_matrix2 # 3x3 rotation matrix (row-major)
 
         # ray generation
         ray_origin, ray_direction = generate_plane_vectors(n_rays, 180, mtx, position)
-        ray_direction= ray_direction.cpu().numpy()
-        p1 = ray_origin.cpu().numpy()
+        p1 = ray_origin
 
         # collect ray intersections
         t = self.track_distances
@@ -382,3 +353,12 @@ class SweepingRayOverlay(CairoWrapper):
         colors = cmap(norm(t))[:, :3]
 
         return p0, p1, colors
+
+
+class CheckpointOverlay(CairoWrapper):
+    def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        checkpoint_info = emu.memory.checkpoint_info()
+        p0, p1 = np.split(checkpoint_info["next_checkpoint_pos"], 2, axis=0)
+        
+        return p0, p1, np.array([0.5, 0.7, 0.0])[None, :]

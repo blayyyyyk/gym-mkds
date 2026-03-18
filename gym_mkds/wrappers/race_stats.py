@@ -9,8 +9,7 @@ class RaceStats(gym.Wrapper):
     def _get_race_stats(self):
         emu: MarioKart = self.get_wrapper_attr('emu')
         if emu.memory.race_ready:
-            progress = emu.memory.race_status.driverStatus[0].raceProgress
-            progress *= FX32_SCALE_FACTOR
+            progress = float(emu.memory.race_status.driverStatus[0].raceProgress)
         else:
             progress = 0.0
             

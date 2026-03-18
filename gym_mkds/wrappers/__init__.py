@@ -5,11 +5,13 @@ from gym_mkds.wrappers.progress_reward import ProgressReward
 from gym_mkds.wrappers.race_stats import RaceStats
 from gym_mkds.wrappers.sweeping_ray import SweepingRay
 from gym_mkds.wrappers.window import GtkVecWindow, GtkWindow
+from gym_mkds.wrappers.checkpoint import Checkpoint
 from gym_mkds.wrappers.window_overlay import (
     CairoWrapper,
     CollisionPrisms,
     ControllerDisplay,
     SweepingRayOverlay,
     TrackBoundary,
+    CheckpointOverlay,
     compose_overlays,
 )

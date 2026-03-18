@@ -7,6 +7,33 @@ from typing import Optional
 import math
 
 
+COLLISION_TYPES = {
+    0: 	"Road",
+    1: 	"Slippery Road",
+    2: 	"Weak Offroad",
+    3: 	"Offroad",
+    4: 	"Sound Trigger",
+    5: 	"Heavy Offroad",
+    6: 	"Slippery Road 2",
+    7: 	"Boost Panel",
+    8: 	"Wall",
+    9: 	"Invisible Wall (ignored by cameras)",
+    10: 	"Out of Bounds",
+    11: 	"Fall Boundary",
+    12: 	"Jump Pad",
+    13: 	"Road (no drivers)",
+    14: 	"Wall (no drivers)",
+    15: 	"Cannon Activator",
+    16: 	"Edge Wall (does not collide when on the ground)",
+    17: 	"Falls Water",
+    18: 	"Boost Pad w/ Min Speed",
+    19: 	"Loop Road",
+    20: 	"Special Road",
+    21: 	"Wall 3",
+    22: 	"Force Recalculate Route",
+}
+
+
 class SweepingRay(gym.ObservationWrapper):
     def __init__(self, env: gym.Env, n_rays: int, min_val: int, max_val: int):
         super().__init__(env)
@@ -33,15 +60,12 @@ class SweepingRay(gym.ObservationWrapper):
         boundary_lines = boundary_lines.reshape(B*T, C)
 
         # surface info
-        position = emu.memory.driver.position
-        mtx = emu.memory.driver.mainMtx[:3, :].T
-        normal = mtx[1].cpu().numpy()
+        position = emu.memory.driver_position
+        mtx = emu.memory.driver_matrix2
+        normal = mtx[1]
 
         # ray generation
         ray_origin, ray_direction = generate_plane_vectors(self.n_rays, 180, mtx, position)
-        ray_direction= ray_direction.cpu().numpy()
-
-        position = position.cpu().numpy()
 
         # projection to local surface
         boundary_lines_uv = project_to_plane(boundary_lines, normal, position)
@@ -59,14 +83,51 @@ class SweepingRay(gym.ObservationWrapper):
         return t
 
 
-def get_track_lines(emu: MarioKart) -> np.ndarray:
+def compute_road_preference(emu: MarioKart, top_k: int = 1) -> list[int]:
+    """
+    Some courses do not have ideal road conditions, 
+    this function returns the road of least driving resistance
+    
+    Args:
+        emu: MarioKart emulator instance
+    Returns:
+        collision_type: int, the collision type of the road of least driving resistance
+    """
+    accepted_roads = [
+        0, # road
+        2, # weak offroad
+        1, # slippery road
+        3, # offroad 
+        5, # heavy offroad
+        6, # slippery road 2
+        8, # wall
+    ]
     col_data = emu.memory.collision_data
     col_type = col_data["prism_attribute"]["collision_type"]
-    road_mask = (col_type == 0)
+    out = []
+    for i in accepted_roads:
+        filtered_col_type = col_type[col_type == i]
+        if len(filtered_col_type) > 0:
+            out.append(i)
+        
+        if len(out) == top_k:
+            return out
+            
+    return [0]
+    
+    
+            
 
-    v1 = col_data["v1"].cpu().numpy()
-    v2 = col_data["v2"].cpu().numpy()
-    v3 = col_data["v3"].cpu().numpy()
+def get_track_lines(emu: MarioKart, road_strictness: int = 1) -> np.ndarray:
+    col_data = emu.memory.collision_data
+    col_type = col_data["prism_attribute"]["collision_type"]
+    
+    accepted_road_col_types = compute_road_preference(emu, road_strictness)
+    road_mask = np.isin(col_type, accepted_road_col_types)
+
+    v1 = col_data["v1"]
+    v2 = col_data["v2"]
+    v3 = col_data["v3"]
     triangles = np.stack([v1, v2, v3], axis=1)
 
     threshold = 10
@@ -224,6 +285,9 @@ def raycast_2d(segments: np.ndarray, ray_origins: np.ndarray, ray_dirs: np.ndarr
     t_valid = np.where(valid_hits, t, np.inf)
 
     # return minimum distance ray
+    if t_valid.size == 0:
+        return np.full_like(ray_origins[:, 0], np.inf)
+    
     min_t = np.min(t_valid, axis=1)  # (N,)
     return min_t
 

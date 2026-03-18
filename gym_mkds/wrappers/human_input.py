@@ -52,11 +52,15 @@ class HumanInput(gym.ActionWrapper):
         return info, obs
 
     def _special_keys(self, key: str):
-        if self.has_wrapper_attr('save_slot_id') and key == "p":
+        if self.has_wrapper_attr('save_slot_id') and key in "p":
             slot_id = self.get_wrapper_attr('save_slot_id')
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.load(slot_id)
         elif self.has_wrapper_attr('save_slot_id') and key == "o":
+            slot_id = self.get_wrapper_attr('save_slot_id')
+            emu: MarioKart = self.get_wrapper_attr('emu')
+            emu.savestate.save(slot_id)
+        elif self.has_wrapper_attr('save_slot_id') and key == "n":
             slot_id = self.get_wrapper_attr('save_slot_id')
             emu: MarioKart = self.get_wrapper_attr('emu')
             emu.savestate.save(slot_id)

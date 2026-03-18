@@ -8,7 +8,7 @@ from desmume.controls import Keys, keymask
 class ControllerAction(gym.ActionWrapper):
     def __init__(self, env: gym.Env, n_keys: int):
         super().__init__(env)
-        self.action_space = gym.spaces.Discrete(n_keys, dtype=np.uint32)
+        self.action_space = gym.spaces.Box(0, n_keys, shape=(1,), dtype=np.uint16)
     
     def action(self, action: Optional[int]) -> int:
         emu: MarioKart = self.get_wrapper_attr('emu')
@@ -16,7 +16,7 @@ class ControllerAction(gym.ActionWrapper):
         if emu.movie.is_playing() or action is None:
             return emu.input.keypad_get()
         else:
-            emu.input.keypad_update(action)
+            emu.input.keypad_update(action if isinstance(action, int) else int(action[0]))
             return action
             
 class ControllerObservation(gym.ObservationWrapper):
@@ -25,10 +25,10 @@ class ControllerObservation(gym.ObservationWrapper):
         if isinstance(env.observation_space, gym.spaces.Dict):
             self.observation_space = gym.spaces.Dict({
                 **env.observation_space.spaces,
-                "keymask": gym.spaces.Box(0, 2048, shape=(1,), dtype=np.uint16),
+                "keymask": gym.spaces.Box(0, n_keys, shape=(1,), dtype=np.uint16),
             })
         else:
-            self.observation_space = gym.spaces.Box(0, 2048, shape=(1,), dtype=np.uint16)
+            self.observation_space = gym.spaces.Box(0, n_keys, shape=(1,), dtype=np.uint16)
             
     def observation(self, observation):
         emu: MarioKart = self.get_wrapper_attr('emu')
@@ -39,3 +39,13 @@ class ControllerObservation(gym.ObservationWrapper):
             }
         
         return super().observation(observation)
+
+class ControllerRemap(gym.ActionWrapper):
+    def __init__(self, keymap: dict[int, int]):
+        self.keymap = keymap
+        self.action_space = gym.spaces.Box(0, len(keymap), shape=(1,), dtype=np.uint16)
+        
+    def action(self, action):
+        return self.keymap.get(action, 0)
+        
+        

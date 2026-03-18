@@ -7,16 +7,15 @@ from desmume.emulator_mkds import (
     SCREEN_WIDTH,
     MarioKart,
 )
-from desmume.mkds.mkds import FX32_SCALE_FACTOR
 
 ID_TO_KEY = [0, 33, 289, 1, 257, 321, 801, 273, 17]
 KEY_TO_ID = {k: i for i, k in enumerate(ID_TO_KEY)}
 
 class MarioKartCoreEnv(gym.Env):
-    def __init__(self, rom_path: str, ray_max_dist: int = 3000, ray_count: int = 20, render_mode: str = "rgb_array", volume: int = 0):
+    def __init__(self, rom_path: str, render_mode: str = "rgb_array", volume: int = 0):
         super().__init__()
         self.device = torch.device("cpu")
-        self.emu = MarioKart(max_dist=ray_max_dist, n_rays=ray_count)
+        self.emu = MarioKart()
         self.state = self.emu.memory
         self.emu.open(rom_path)
         self.emu.volume_set(volume)
@@ -33,9 +32,13 @@ class MarioKartCoreEnv(gym.Env):
     def _get_obs(self):
         assert isinstance(self.observation_space, gym.spaces.Dict)
         pos_dtype = self.observation_space["position"].dtype
+        if self.state.race_ready:
+            pos = self.state.driver_position
+        else:
+            pos = np.zeros((3,), dtype=pos_dtype)
 
         return {
-            "position": self.state.driver.position.numpy() if self.state.race_ready else np.zeros((3,), dtype=pos_dtype)
+            "position": pos
         }
 
     def _get_info(self):
@@ -73,6 +76,11 @@ class MarioKartCoreEnv(gym.Env):
 
         obs = self._get_obs()
         info = self._get_info()
+        
+        if self.state.race_ready:
+            self.state.driver.position.x.val = 40000
+            self.state.driver.position.y.val = -40000
+            self.state.driver.position.z.val = 40000
 
         return obs, info
 
