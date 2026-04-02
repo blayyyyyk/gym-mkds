@@ -172,8 +172,10 @@ poetry.toml
 
 # LSP config files
 pyrightconfig.json
+ty.toml
 
 # zed
 .zed
+
 
 # End of https://www.toptal.com/developers/gitignore/api/python

@@ -3,7 +3,7 @@ import numpy as np
 from desmume.emulator_mkds import MarioKart
 from desmume.vector import generate_plane_vectors
 import trimesh
-from typing import Optional
+from typing import Literal, Optional
 import math
 
 
@@ -35,11 +35,12 @@ COLLISION_TYPES = {
 
 
 class SweepingRay(gym.ObservationWrapper):
-    def __init__(self, env: gym.Env, n_rays: int, min_val: int, max_val: int):
+    def __init__(self, env: gym.Env, n_rays: int, min_val: int, max_val: int, elevation_threshold: float = 50.0):
         super().__init__(env)
         self.n_rays = n_rays
         self.min_val = min_val
         self.max_val = max_val
+        self.elevation_threshold = elevation_threshold
         if isinstance(env.observation_space, gym.spaces.Dict):
             self.observation_space = gym.spaces.Dict({
                 "wall_distances": gym.spaces.Box(low=0, high=math.inf, shape=(n_rays,), dtype=np.float32)
@@ -55,14 +56,31 @@ class SweepingRay(gym.ObservationWrapper):
             }
 
         # boundary extraction
-        boundary_lines = get_track_lines(emu)
-        B, T, C = boundary_lines.shape
-        boundary_lines = boundary_lines.reshape(B*T, C)
-
+        boundary_lines = find_current_boundary_lines(emu)
+        
         # surface info
         position = emu.memory.driver_position
         mtx = emu.memory.driver_matrix2
         normal = mtx[1]
+
+        # Calculate perpendicular distance to the kart's plane and filter
+        n_hat = normal / (np.linalg.norm(normal) + 1e-9)
+        vecs = boundary_lines - position
+        dists = np.dot(vecs, n_hat)
+        
+        # Keep segments where at least one endpoint is within the threshold
+        valid_mask = np.min(np.abs(dists), axis=1) < self.elevation_threshold
+        boundary_lines = boundary_lines[valid_mask]
+        
+        # Guard against edge cases where the filter removes all lines (e.g., falling out of bounds)
+        if len(boundary_lines) == 0:
+            t = np.full((self.n_rays,), self.max_val, dtype=np.float32)
+            if isinstance(self.observation_space, gym.spaces.Dict) and isinstance(observation, dict):
+                return {"wall_distances": t}
+            return t
+
+        B, T, C = boundary_lines.shape
+        boundary_lines = boundary_lines.reshape(B*T, C)
 
         # ray generation
         ray_origin, ray_direction = generate_plane_vectors(self.n_rays, 180, mtx, position)
@@ -83,7 +101,16 @@ class SweepingRay(gym.ObservationWrapper):
         return t
 
 
-def compute_road_preference(emu: MarioKart, top_k: int = 1) -> list[int]:
+ACCEPTED_ROADS = [
+    0, # road
+    2, # weak offroad
+    1, # slippery road
+    3, # offroad 
+    5, # heavy offroad
+    6, # slippery road 2
+]
+
+def compute_road_preference(emu: MarioKart, accepted_roads: set[int] = set(ACCEPTED_ROADS)) -> list[int]:
     """
     Some courses do not have ideal road conditions, 
     this function returns the road of least driving resistance
@@ -93,52 +120,62 @@ def compute_road_preference(emu: MarioKart, top_k: int = 1) -> list[int]:
     Returns:
         collision_type: int, the collision type of the road of least driving resistance
     """
-    accepted_roads = [
-        0, # road
-        2, # weak offroad
-        1, # slippery road
-        3, # offroad 
-        5, # heavy offroad
-        6, # slippery road 2
-        8, # wall
-    ]
+    
     col_data = emu.memory.collision_data
     col_type = col_data["prism_attribute"]["collision_type"]
-    out = []
-    for i in accepted_roads:
+    out = [0] # 0 = road
+    
+    roads = set(ACCEPTED_ROADS) & accepted_roads
+    for i in roads:
+        if i == 0: continue
+        
         filtered_col_type = col_type[col_type == i]
         if len(filtered_col_type) > 0:
             out.append(i)
-        
-        if len(out) == top_k:
-            return out
             
-    return [0]
+    return out
     
-    
-            
 
-def get_track_lines(emu: MarioKart, road_strictness: int = 1) -> np.ndarray:
+def get_standing_triangle_id(emu: MarioKart) -> int:
+    position = emu.memory.driver_position
+    triangles = emu.memory.kcl.triangular_faces # (B, 3, 3)
+    center = triangles.mean(axis=1) # (B, 3)
+    dist = np.linalg.norm(center - position, axis=-1) # (B,)
+    nearby_idx = np.argmin(dist).item() # (1,)
+    return nearby_idx
+
+
+def find_current_boundary_lines(emu: MarioKart, mode: Literal["nearest"] | Literal["strict"] | Literal["custom"] = "nearest", min_id: int = 0) -> np.ndarray:
     col_data = emu.memory.collision_data
     col_type = col_data["prism_attribute"]["collision_type"]
     
-    accepted_road_col_types = compute_road_preference(emu, road_strictness)
-    road_mask = np.isin(col_type, accepted_road_col_types)
+    heirarchy = {ACCEPTED_ROADS[i]: ACCEPTED_ROADS[:i+1] for i in range(len(ACCEPTED_ROADS))}
+    if mode == "nearest":
+        nearby_triangle_idx = get_standing_triangle_id(emu)
+        nearby_col_type = col_type[nearby_triangle_idx]
+        if nearby_col_type in heirarchy:
+            accepted_road_types = heirarchy[nearby_col_type]
+        else:
+            accepted_road_types = ACCEPTED_ROADS
+    elif mode == "strict":
+        accepted_road_types = ACCEPTED_ROADS[0:1]
+    elif mode == "custom":
+        accepted_road_types = heirarchy[min_id]
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+    
+    road_mask = np.isin(col_type, accepted_road_types)
+    return find_boundary_lines(emu, road_mask)
 
-    v1 = col_data["v1"]
-    v2 = col_data["v2"]
-    v3 = col_data["v3"]
-    triangles = np.stack([v1, v2, v3], axis=1)
 
-    threshold = 10
-    triangles = np.round(triangles / threshold) * threshold
-    boundary_lines = find_boundary_lines(triangles, road_mask)
-    return boundary_lines
-
-def find_boundary_lines(triangles: np.ndarray, road_mask: np.ndarray) -> np.ndarray:
+def find_boundary_lines(emu: MarioKart, road_mask: np.ndarray, precision: float = 0.05) -> np.ndarray:
     """
     Finds shared lines between road and non-road triangles.
     """
+    
+    triangles = emu.memory.kcl.triangular_faces
+    triangles = np.round(triangles * precision) / precision
+    
     # build mesh
     raw_vertices = triangles.reshape(-1, 3)
     raw_faces = np.arange(len(raw_vertices)).reshape(-1, 3)

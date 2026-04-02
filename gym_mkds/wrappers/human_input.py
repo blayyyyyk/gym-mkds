@@ -46,8 +46,10 @@ class HumanInput(gym.ActionWrapper):
             pass
 
     def reset(self, *, seed=None, options=None):
-        self.listener.daemon = True
-        self.listener.start()
+        if not self.listener.running:
+            self.listener.daemon = True
+            self.listener.start()
+        
         info, obs = super().reset(seed=seed, options=options)
         return info, obs
 

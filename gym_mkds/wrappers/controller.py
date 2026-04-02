@@ -40,10 +40,18 @@ class ControllerObservation(gym.ObservationWrapper):
         
         return super().observation(observation)
 
+SPARSE_KEYMAP = {
+    0: 17,
+    1: 33,
+    2: 0,
+    3: 1
+}
+
 class ControllerRemap(gym.ActionWrapper):
-    def __init__(self, keymap: dict[int, int]):
+    def __init__(self, env: gym.Env, keymap: dict[int, int]):
+        super().__init__(env)
         self.keymap = keymap
-        self.action_space = gym.spaces.Box(0, len(keymap), shape=(1,), dtype=np.uint16)
+        self.action_space = gym.spaces.Discrete(len(keymap), dtype=np.uint16)
         
     def action(self, action):
         return self.keymap.get(action, 0)

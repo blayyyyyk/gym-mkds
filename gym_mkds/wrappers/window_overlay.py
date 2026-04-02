@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from functools import reduce
 from typing import cast
 
@@ -11,7 +12,7 @@ from desmume.emulator_mkds import MarioKart
 from desmume.vector import generate_plane_vectors
 from PIL import Image, ImageDraw, ImageFont
 
-from gym_mkds.wrappers.sweeping_ray import get_track_lines
+from gym_mkds.wrappers.sweeping_ray import get_standing_triangle_id, find_current_boundary_lines
 
 KEY_LABELS = ['X', 'Y', 'L', 'R', '↓', '↑', '←', '→', '8', '9', 'B', 'A']
 COLOR_MAP = [
@@ -217,6 +218,79 @@ class ControllerDisplay(gym.ObservationWrapper):
         return frame
 
 
+class RewardDisplayWrapper(gym.Wrapper):
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.info = {}
+
+    def step(self, action):
+        # Unpack dynamically to support both older Gym (4-tuple) and newer Gymnasium (5-tuple)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        self.info = info
+        
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        # Reset the score at the start of a new episode
+        self.cumulative_reward = 0.0
+        return self.env.reset(**kwargs)
+
+    def render(self):
+        frame = super().render()
+        
+        if getattr(self, "render_mode", None) == "rgb_array" and frame is not None:
+            assert isinstance(frame, np.ndarray) and not isinstance(frame, list)
+
+            # Convert numpy array to PIL Image
+            # Ensure it's RGBA so we can easily composite a semi-transparent background
+            pil_frame = Image.fromarray(frame).convert("RGBA")
+            
+            try:
+                font = ImageFont.truetype("arial.ttf", 12)
+            except IOError:
+                try:
+                    font = ImageFont.truetype("/Users/blakemoody/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf", 12)
+                except IOError:
+                    font = ImageFont.load_default()
+
+            
+            text = f""
+            for k, v in self.info.items():
+                if isinstance(v, float):
+                    text += f"{k}: {v}\n"
+            
+            # Create a separate transparent overlay for the text and its background
+            overlay = Image.new('RGBA', pil_frame.size, (255, 255, 255, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            # Calculate text bounding box
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+
+            # Calculate top-right position
+            padding = 10
+            img_w, _ = pil_frame.size
+            x = img_w - text_w - padding
+            y = padding
+
+            # Draw a semi-transparent black rectangle behind the text for readability
+            rect_pad = 4
+            draw.rectangle(
+                [x - rect_pad, y - rect_pad, x + text_w + rect_pad, y + text_h + rect_pad],
+                fill=(0, 0, 0, 150) # 150/255 opacity
+            )
+
+            # Draw the white text
+            draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+
+            # Composite the overlay onto the original frame and convert back to RGB array
+            composite = Image.alpha_composite(pil_frame, overlay).convert("RGB")
+            return np.array(composite)
+
+        return frame
+
 
 class CairoWrapper(gym.ObservationWrapper):
     def __init__(self, env: gym.Env):
@@ -230,8 +304,8 @@ class CairoWrapper(gym.ObservationWrapper):
     def _project(self, *pts: np.ndarray, colors: np.ndarray, depth_mask=True) -> tuple[np.ndarray, ...]:
         B, C = pts[0].shape
         pts_cat = np.concat(pts, axis=0)
-        emu: MarioKart = self.get_wrapper_attr('emu')
-        proj = emu.memory.project_to_screen(pts_cat, normalize_depth=True)
+        emu: MarioKart = cast(MarioKart, self.get_wrapper_attr('emu'))
+        proj = emu.memory.project_to_screen(pts_cat)
         proj_mask = proj["mask"].reshape(len(pts), B).all(axis=0)
         proj_pts = proj["screen"].reshape(len(pts), B, C)
         proj_pts = proj_pts[:, proj_mask, :] if depth_mask else proj_pts
@@ -239,6 +313,7 @@ class CairoWrapper(gym.ObservationWrapper):
         chunks = np.split(proj_pts, len(pts), axis=0)
         return tuple([x.squeeze(0) for x in chunks]) + (proj_colors,)
 
+    @abstractmethod
     def _compute(self) -> tuple[np.ndarray, ...]:
         ...
 
@@ -280,30 +355,31 @@ class CairoWrapper(gym.ObservationWrapper):
 
 class CollisionPrisms(CairoWrapper):
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        emu = self.get_wrapper_attr('emu')
-        v1 = emu.memory.collision_data["v1"].to(emu.device)
-        v2 = emu.memory.collision_data["v2"].to(emu.device)
-        v3 = emu.memory.collision_data["v3"].to(emu.device)
-        tri = torch.stack([v1, v2, v3], dim=0).cpu().numpy()
+        emu: MarioKart = self.get_wrapper_attr('emu')
+        idx = get_standing_triangle_id(emu)
+        faces = emu.memory.kcl.triangular_faces[idx:idx+1]
+        
+        v1, v2, v3 = np.unstack(faces, axis=1)
+        tri = np.stack([v1, v2, v3], axis=0)
 
         # material color
-        color_map = np.array(COLOR_MAP, dtype=np.uint8)
-        collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"]
+        color_map = np.array(COLOR_MAP, dtype=np.float32) / 255
+        collision_type = emu.memory.collision_data["prism_attribute"]["collision_type"][idx:idx+1]
         floor_mask = (
             emu.memory.collision_data["prism_attribute"]["is_floor"] == 1
         )
         wall_mask = emu.memory.collision_data["prism_attribute"]["is_wall"] != 1
-        collision_type = collision_type[floor_mask & wall_mask]
+        collision_type = collision_type
         colors = color_map[collision_type]
-        tri = tri[:, floor_mask & wall_mask]
+        tri = tri
         v1, v2, v3 = np.unstack(tri)
         return v1, v2, v3, colors
 
 
 class TrackBoundary(CairoWrapper):
     def _compute(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        emu: MarioKart = self.get_wrapper_attr('emu')
-        boundary_lines = get_track_lines(emu)
+        emu: MarioKart = cast(MarioKart, self.get_wrapper_attr('emu'))
+        boundary_lines = find_current_boundary_lines(emu)
         p0, p1 = np.split(boundary_lines, 2, axis=1)
         p0 = p0.reshape(-1, 3) # squeeze
         p1 = p1.reshape(-1, 3) # squeeze

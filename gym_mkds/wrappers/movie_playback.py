@@ -33,10 +33,14 @@ class MoviePlaybackWrapper(gym.Wrapper):
         ), "Provided environment does not have an emulator attribute. It is recommended to use the MarioKartEnv as your base environment."
         self.movie_path = path
         self.movie_update_rule = func
+        self.movie_played = False
 
     def reset(self, *, seed=None, options=None):
-        emu: MarioKart = self.get_wrapper_attr('emu')
-        emu.movie.play(self.movie_path)
+        if not self.movie_played:
+            emu: MarioKart = self.get_wrapper_attr('emu')
+            emu.movie.play(self.movie_path)
+            self.movie_played = True
+        
         return super().reset()
 
     def _get_info(self):

@@ -166,7 +166,7 @@ class VecEnvWindow(WindowBase[gym.vector.VectorEnv]):
 
             extents = ctx.text_extents(label_text)
             text_x = x + (W + self.frame_width) - extents.width - 5
-            text_y = y + self.frame_width + extents.height + 5
+            text_y = y + extents.height + 5
 
             ctx.set_source_rgba(0, 0, 0, 0.6)
             ctx.rectangle(text_x - 2, text_y - extents.height - 2, extents.width + 4, extents.height + 4)

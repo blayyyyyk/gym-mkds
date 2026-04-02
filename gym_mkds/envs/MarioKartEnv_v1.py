@@ -2,17 +2,20 @@ import gymnasium as gym
 import numpy as np
 import torch
 from desmume.emulator_mkds import (
+    FX32_SCALE_FACTOR,
     SCREEN_HEIGHT,
     SCREEN_PIXEL_SIZE,
     SCREEN_WIDTH,
     MarioKart,
+    set_fx,
+    get_fx
 )
 
 ID_TO_KEY = [0, 33, 289, 1, 257, 321, 801, 273, 17]
 KEY_TO_ID = {k: i for i, k in enumerate(ID_TO_KEY)}
 
 class MarioKartCoreEnv(gym.Env):
-    def __init__(self, rom_path: str, render_mode: str = "rgb_array", volume: int = 0):
+    def __init__(self, rom_path: str, render_mode: str = "rgb_array", volume: int = 0, starting_hp: float = 200.0):
         super().__init__()
         self.device = torch.device("cpu")
         self.emu = MarioKart()
@@ -28,6 +31,10 @@ class MarioKartCoreEnv(gym.Env):
             "render_fps": 30
         }
         self.render_mode = render_mode
+        self.start_coords = None
+        self.start_view = None
+        self.starting_hp = starting_hp
+        self.hp = starting_hp
 
     def _get_obs(self):
         assert isinstance(self.observation_space, gym.spaces.Dict)
@@ -43,15 +50,19 @@ class MarioKartCoreEnv(gym.Env):
 
     def _get_info(self):
         return {
-            "race_started": self.state.race_ready
+            "race_started": self.state.race_ready,
+            "health": self.hp
         }
 
     def step(self, action):
         self.emu.cycle()
+        if self.emu.memory.race_ready and self.start_coords is None:
+            self.start_coords = self.emu.memory.driver_position
+            self.start_view = self.emu.memory.driver_matrix
 
         obs = self._get_obs()
         info = self._get_info()
-        terminated = False
+        terminated = self.hp <= 0.0
         truncated = False
         reward = 0.0
 
@@ -77,10 +88,14 @@ class MarioKartCoreEnv(gym.Env):
         obs = self._get_obs()
         info = self._get_info()
         
-        if self.state.race_ready:
-            self.state.driver.position.x.val = 40000
-            self.state.driver.position.y.val = -40000
-            self.state.driver.position.z.val = 40000
+        if not (self.start_coords is None or self.start_view is None):
+            arr = self.start_coords.copy()
+            mtx = self.start_view.copy()
+            arr += 20.0
+            set_fx(self.emu.memory.driver.position, (3,), np.array([2000, -2000, 2000], dtype=np.float32))
+            self.emu.memory.driver_velocity = np.array([0, 0, 0], dtype=np.float32)
+            
+        self.hp = self.starting_hp
 
         return obs, info
 
