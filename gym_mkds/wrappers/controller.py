@@ -15,9 +15,17 @@ class ControllerAction(gym.ActionWrapper):
         emu.input.keypad_update(0)
         if emu.movie.is_playing() or action is None:
             return emu.input.keypad_get()
-        else:
-            emu.input.keypad_update(action if isinstance(action, int) else int(action[0]))
+        elif action is None:
+            return 0
+        elif isinstance(action, int):
+            emu.input.keypad_update(action)
             return action
+        elif isinstance(action, (list, np.ndarray)):
+            if len(action) == 0:
+                action = [0]
+            
+            emu.input.keypad_update(action[0])
+            return action[0]
             
 class ControllerObservation(gym.ObservationWrapper):
     def __init__(self, env: gym.Env, n_keys: int):

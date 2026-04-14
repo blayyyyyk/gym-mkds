@@ -145,7 +145,7 @@ def get_standing_triangle_id(emu: MarioKart) -> int:
     return nearby_idx
 
 
-def find_current_boundary_lines(emu: MarioKart, mode: Literal["nearest"] | Literal["strict"] | Literal["custom"] = "nearest", min_id: int = 0) -> np.ndarray:
+def find_current_boundary_lines(emu: MarioKart, mode: Literal["nearest"] | Literal["strict"] | Literal["custom"] = "nearest", min_id: int = 0, precision: float = 0.05) -> np.ndarray:
     col_data = emu.memory.collision_data
     col_type = col_data["prism_attribute"]["collision_type"]
     
@@ -165,7 +165,7 @@ def find_current_boundary_lines(emu: MarioKart, mode: Literal["nearest"] | Liter
         raise ValueError(f"Invalid mode: {mode}")
     
     road_mask = np.isin(col_type, accepted_road_types)
-    return find_boundary_lines(emu, road_mask)
+    return find_boundary_lines(emu, road_mask, precision)
 
 
 def find_boundary_lines(emu: MarioKart, road_mask: np.ndarray, precision: float = 0.05) -> np.ndarray:

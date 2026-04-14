@@ -7,10 +7,10 @@ packages = ["gym_mkds"]
 
 [project]
 name = "gym_mkds"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
   "gymnasium",
-  "py-desmume-mkds>=0.0.15",
+  "py-desmume-mkds>=0.0.19",
   "opencv-python>=4.13.0.92",
   "numpy",
   "trimesh==4.11.3",
